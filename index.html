@@ -1,0 +1,496 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>備品貸出申請 | 豊田連合町内会自治会</title>
+
+<!-- Firebase -->
+<script type="module">
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+  import { getFirestore, collection, getDocs, addDoc, doc, updateDoc, query, where, Timestamp }
+    from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+
+  // ========== Firebase 設定（要変更） ==========
+  const firebaseConfig = {
+    apiKey: "AIzaSyBNXY7IsGFOmi-sttpTz6bRPeY0egBSDHM",
+    authDomain: "bippi-kashidashi.firebaseapp.com",
+    projectId: "bippi-kashidashi",
+    storageBucket: "bippi-kashidashi.firebasestorage.app",
+    messagingSenderId: "854789352185",
+    appId: "1:854789352185:web:a1b358e19ed24dc2211028"
+  };
+
+  // ========== EmailJS 設定（要変更） ==========
+  const EMAILJS_SERVICE_ID  = "service_00iwd0b";
+  const EMAILJS_TEMPLATE_ID = "template_XXXX";   // 新規テンプレートID
+  const EMAILJS_PUBLIC_KEY  = "o3CzdJalruGgdHR9n";
+
+  // 通知先メールアドレス（要変更）
+  const NOTIFY_EMAIL = "sakae.toyodarengou@gmail.com";
+
+  const app = initializeApp(firebaseConfig);
+  const db  = getFirestore(app);
+
+  // ========== 在庫読み込み ==========
+  async function loadItems() {
+    const snap = await getDocs(collection(db, "items"));
+    const items = [];
+    snap.forEach(d => items.push({ id: d.id, ...d.data() }));
+    // カテゴリ順・名前順でソート
+    items.sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name));
+    renderItems(items);
+  }
+
+  function renderItems(items) {
+    const grid = document.getElementById("itemGrid");
+    grid.innerHTML = "";
+
+    items.forEach(item => {
+      const available = item.stock - (item.lent || 0);
+      const card = document.createElement("label");
+      card.className = "item-card" + (available <= 0 ? " unavailable" : "");
+      card.dataset.id   = item.id;
+      card.dataset.name = item.name;
+      card.dataset.max  = available;
+
+      card.innerHTML = `
+        <input type="checkbox" class="item-check" value="${item.id}"
+          data-name="${item.name}" data-max="${available}"
+          ${available <= 0 ? "disabled" : ""}>
+        <div class="item-icon">${item.icon || "📦"}</div>
+        <div class="item-name">${item.name}</div>
+        <div class="item-stock ${available <= 0 ? 'stock-zero' : available <= 1 ? 'stock-low' : ''}">
+          ${available <= 0 ? "貸出中" : `残り <strong>${available}</strong> 点`}
+        </div>
+        ${available > 1 ? `
+        <div class="qty-row" style="display:none">
+          <span>数量：</span>
+          <select class="qty-select" data-id="${item.id}">
+            ${[...Array(available)].map((_, i) =>
+              `<option value="${i+1}">${i+1}</option>`).join("")}
+          </select>
+        </div>` : ""}
+        <div class="check-mark">✓</div>
+      `;
+      grid.appendChild(card);
+    });
+
+    // チェックボックス変化でカード状態更新
+    document.querySelectorAll(".item-check").forEach(cb => {
+      cb.addEventListener("change", e => {
+        const card = e.target.closest(".item-card");
+        card.classList.toggle("selected", e.target.checked);
+        const qtyRow = card.querySelector(".qty-row");
+        if (qtyRow) qtyRow.style.display = e.target.checked ? "flex" : "none";
+        updateSummary();
+      });
+    });
+  }
+
+  function updateSummary() {
+    const selected = document.querySelectorAll(".item-check:checked");
+    const list = document.getElementById("summaryList");
+    list.innerHTML = "";
+    selected.forEach(cb => {
+      const card = cb.closest(".item-card");
+      const qtyEl = card.querySelector(".qty-select");
+      const qty = qtyEl ? parseInt(qtyEl.value) : 1;
+      const li = document.createElement("li");
+      li.textContent = `${cb.dataset.name}　×${qty}`;
+      list.appendChild(li);
+    });
+    document.getElementById("summarySection").style.display =
+      selected.length > 0 ? "block" : "none";
+  }
+
+  // 数量変更でサマリー更新
+  document.addEventListener("change", e => {
+    if (e.target.classList.contains("qty-select")) updateSummary();
+  });
+
+  // ========== フォーム送信 ==========
+  async function submitForm(e) {
+    e.preventDefault();
+    const btn = document.getElementById("submitBtn");
+    btn.disabled = true;
+    btn.textContent = "送信中…";
+
+    const checked = [...document.querySelectorAll(".item-check:checked")];
+    if (checked.length === 0) {
+      alert("備品を1点以上選んでください。");
+      btn.disabled = false;
+      btn.textContent = "申請する";
+      return;
+    }
+
+    const lentItems = checked.map(cb => {
+      const card = cb.closest(".item-card");
+      const qtyEl = card.querySelector(".qty-select");
+      return { id: cb.value, name: cb.dataset.name, qty: qtyEl ? parseInt(qtyEl.value) : 1 };
+    });
+
+    const form = document.getElementById("loanForm");
+    const data = {
+      applicantName : form.applicantName.value.trim(),
+      association   : form.association.value.trim(),
+      phone         : form.phone.value.trim(),
+      useDate       : form.useDate.value,
+      returnDate    : form.returnDate.value,
+      purpose       : form.purpose.value.trim(),
+      items         : lentItems,
+      status        : "申請中",
+      createdAt     : Timestamp.now()
+    };
+
+    try {
+      // Firestore に保存
+      await addDoc(collection(db, "loans"), data);
+
+      // 在庫を更新
+      for (const item of lentItems) {
+        const itemRef = doc(db, "items", item.id);
+        const snap = await getDocs(query(collection(db, "items")));
+        snap.forEach(async d => {
+          if (d.id === item.id) {
+            await updateDoc(itemRef, { lent: (d.data().lent || 0) + item.qty });
+          }
+        });
+      }
+
+      // EmailJS 通知
+      const itemText = lentItems.map(i => `・${i.name} ×${i.qty}`).join("\n");
+      emailjs.send(EMAILJS_SERVICE_ID, EMAILJS_TEMPLATE_ID, {
+        to_email    : NOTIFY_EMAIL,
+        applicant   : data.applicantName,
+        association : data.association,
+        phone       : data.phone,
+        use_date    : data.useDate,
+        return_date : data.returnDate,
+        purpose     : data.purpose,
+        items       : itemText
+      }, EMAILJS_PUBLIC_KEY);
+
+      document.getElementById("loanForm").style.display = "none";
+      document.getElementById("successMsg").style.display = "block";
+
+    } catch (err) {
+      console.error(err);
+      alert("送信中にエラーが発生しました。\n" + err.message);
+      btn.disabled = false;
+      btn.textContent = "申請する";
+    }
+  }
+
+  // DOM 準備後に初期化
+  window.addEventListener("DOMContentLoaded", () => {
+    loadItems();
+    document.getElementById("loanForm").addEventListener("submit", submitForm);
+  });
+</script>
+
+<!-- EmailJS -->
+<script src="https://cdn.jsdelivr.net/npm/@emailjs/browser@4/dist/email.min.js"></script>
+
+<style>
+  :root {
+    --green:   #2e7d52;
+    --green-l: #4caf76;
+    --green-bg:#f0f7f3;
+    --accent:  #f5a623;
+    --text:    #1a2e22;
+    --muted:   #6b8577;
+    --border:  #c8dfd2;
+    --card-bg: #ffffff;
+    --radius:  12px;
+    --shadow:  0 2px 12px rgba(46,125,82,.10);
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: "Hiragino Kaku Gothic ProN", "Meiryo", sans-serif;
+    background: var(--green-bg);
+    color: var(--text);
+    min-height: 100vh;
+  }
+
+  /* ヘッダー */
+  header {
+    background: var(--green);
+    color: #fff;
+    padding: 20px 24px 16px;
+    text-align: center;
+  }
+  header .org { font-size: .75rem; opacity: .8; margin-bottom: 4px; }
+  header h1  { font-size: 1.35rem; font-weight: 700; letter-spacing: .05em; }
+
+  /* メインコンテンツ */
+  main { max-width: 680px; margin: 0 auto; padding: 24px 16px 60px; }
+
+  /* セクション見出し */
+  .section-title {
+    font-size: .8rem;
+    font-weight: 700;
+    color: var(--green);
+    letter-spacing: .1em;
+    text-transform: uppercase;
+    margin: 28px 0 12px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .section-title::after {
+    content: "";
+    flex: 1;
+    height: 1px;
+    background: var(--border);
+  }
+
+  /* 在庫グリッド */
+  #itemGrid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+    gap: 12px;
+  }
+
+  .item-card {
+    background: var(--card-bg);
+    border: 2px solid var(--border);
+    border-radius: var(--radius);
+    padding: 14px 12px 12px;
+    cursor: pointer;
+    position: relative;
+    transition: all .2s ease;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+    gap: 4px;
+    user-select: none;
+  }
+  .item-card:hover:not(.unavailable) { border-color: var(--green-l); box-shadow: var(--shadow); }
+  .item-card.selected {
+    border-color: var(--green);
+    background: #e8f5ee;
+    box-shadow: 0 0 0 3px rgba(46,125,82,.15);
+  }
+  .item-card.unavailable { opacity: .5; cursor: not-allowed; background: #f5f5f5; }
+
+  .item-card input[type="checkbox"] { display: none; }
+
+  .item-icon  { font-size: 2rem; line-height: 1; }
+  .item-name  { font-size: .82rem; font-weight: 700; color: var(--text); line-height: 1.3; }
+  .item-stock { font-size: .75rem; color: var(--muted); margin-top: 2px; }
+  .item-stock.stock-low  { color: #e67e22; font-weight: 700; }
+  .item-stock.stock-zero { color: #c0392b; font-weight: 700; }
+
+  .qty-row {
+    margin-top: 6px;
+    align-items: center;
+    gap: 6px;
+    font-size: .78rem;
+    color: var(--muted);
+  }
+  .qty-select {
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 2px 6px;
+    font-size: .82rem;
+    background: #fff;
+  }
+
+  .check-mark {
+    position: absolute;
+    top: 6px; right: 8px;
+    font-size: 1rem;
+    color: var(--green);
+    font-weight: 700;
+    opacity: 0;
+    transition: opacity .15s;
+  }
+  .item-card.selected .check-mark { opacity: 1; }
+
+  /* 選択サマリー */
+  #summarySection {
+    display: none;
+    background: #e8f5ee;
+    border: 1px solid var(--green-l);
+    border-radius: var(--radius);
+    padding: 14px 18px;
+    margin-top: 8px;
+  }
+  #summarySection h3 { font-size: .85rem; color: var(--green); margin-bottom: 8px; }
+  #summaryList { list-style: none; font-size: .88rem; line-height: 1.8; }
+
+  /* 入力フォーム */
+  .form-group { margin-bottom: 16px; }
+  .form-group label {
+    display: block;
+    font-size: .8rem;
+    font-weight: 700;
+    color: var(--muted);
+    margin-bottom: 5px;
+    letter-spacing: .05em;
+  }
+  .form-group label .required {
+    color: #e74c3c;
+    margin-left: 4px;
+    font-size: .75rem;
+  }
+  .form-group input,
+  .form-group select,
+  .form-group textarea {
+    width: 100%;
+    padding: 10px 14px;
+    border: 1.5px solid var(--border);
+    border-radius: 8px;
+    font-size: .9rem;
+    font-family: inherit;
+    background: #fff;
+    color: var(--text);
+    transition: border-color .2s;
+  }
+  .form-group input:focus,
+  .form-group select:focus,
+  .form-group textarea:focus {
+    outline: none;
+    border-color: var(--green);
+    box-shadow: 0 0 0 3px rgba(46,125,82,.1);
+  }
+  .form-group textarea { resize: vertical; min-height: 72px; }
+
+  .date-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+
+  /* 送信ボタン */
+  #submitBtn {
+    width: 100%;
+    padding: 14px;
+    background: var(--green);
+    color: #fff;
+    border: none;
+    border-radius: var(--radius);
+    font-size: 1rem;
+    font-weight: 700;
+    font-family: inherit;
+    cursor: pointer;
+    margin-top: 8px;
+    letter-spacing: .05em;
+    transition: background .2s, transform .1s;
+  }
+  #submitBtn:hover  { background: var(--green-l); }
+  #submitBtn:active { transform: scale(.98); }
+  #submitBtn:disabled { background: #9ab8a8; cursor: not-allowed; }
+
+  /* 完了メッセージ */
+  #successMsg {
+    display: none;
+    text-align: center;
+    padding: 48px 24px;
+    background: var(--card-bg);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    margin-top: 24px;
+  }
+  #successMsg .check-big { font-size: 3.5rem; }
+  #successMsg h2 { font-size: 1.2rem; color: var(--green); margin: 12px 0 8px; }
+  #successMsg p  { font-size: .88rem; color: var(--muted); line-height: 1.7; }
+
+  /* 注意書き */
+  .notice {
+    background: #fffbf0;
+    border-left: 3px solid var(--accent);
+    border-radius: 4px;
+    padding: 10px 14px;
+    font-size: .8rem;
+    color: #7a5c00;
+    line-height: 1.6;
+    margin-bottom: 8px;
+  }
+
+  /* ローディング */
+  .loading {
+    text-align: center;
+    padding: 40px;
+    color: var(--muted);
+    font-size: .9rem;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="org">豊田連合町内会自治会</div>
+  <h1>🏷️ 備品貸出申請</h1>
+</header>
+
+<main>
+  <form id="loanForm">
+
+    <!-- 備品選択 -->
+    <div class="section-title">📦 貸出備品を選んでください</div>
+    <div class="notice">
+      ✅ 複数の備品を同時に選べます。在庫が「貸出中」の備品は選択できません。
+    </div>
+    <div id="itemGrid"><div class="loading">在庫を読み込み中…</div></div>
+
+    <!-- 選択サマリー -->
+    <div id="summarySection">
+      <h3>✅ 選択中の備品</h3>
+      <ul id="summaryList"></ul>
+    </div>
+
+    <!-- 申請者情報 -->
+    <div class="section-title">👤 申請者情報</div>
+
+    <div class="form-group">
+      <label>氏名 <span class="required">必須</span></label>
+      <input type="text" name="applicantName" placeholder="例）山田　太郎" required>
+    </div>
+
+    <div class="form-group">
+      <label>自治会・町内会名 <span class="required">必須</span></label>
+      <input type="text" name="association" placeholder="例）○○自治会" required>
+    </div>
+
+    <div class="form-group">
+      <label>連絡先電話番号 <span class="required">必須</span></label>
+      <input type="tel" name="phone" placeholder="例）090-0000-0000" required>
+    </div>
+
+    <!-- 使用日程 -->
+    <div class="section-title">📅 使用日程</div>
+
+    <div class="date-row">
+      <div class="form-group">
+        <label>使用日 <span class="required">必須</span></label>
+        <input type="date" name="useDate" required>
+      </div>
+      <div class="form-group">
+        <label>返却予定日 <span class="required">必須</span></label>
+        <input type="date" name="returnDate" required>
+      </div>
+    </div>
+
+    <div class="form-group">
+      <label>使用目的</label>
+      <textarea name="purpose" placeholder="例）町内会運動会でのボッチャ大会"></textarea>
+    </div>
+
+    <button type="submit" id="submitBtn">申請する →</button>
+
+  </form>
+
+  <!-- 完了メッセージ -->
+  <div id="successMsg">
+    <div class="check-big">✅</div>
+    <h2>申請を受け付けました</h2>
+    <p>担当者に通知メールを送信しました。<br>
+       確認後、改めてご連絡いたします。<br>
+       ご不明な点は連合事務局までお問い合わせください。</p>
+  </div>
+
+</main>
+
+</body>
+</html>

@@ -1,0 +1,354 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>備品管理画面 | 豊田連合町内会自治会</title>
+
+<script type="module">
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+  import { getFirestore, collection, getDocs, doc, updateDoc, deleteDoc,
+           query, orderBy, Timestamp }
+    from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+
+  // ========== Firebase 設定（index.html と同じ値を入れる） ==========
+  const firebaseConfig = {
+    apiKey: "AIzaSyBNXY7IsGFOmi-sttpTz6bRPeY0egBSDHM",
+    authDomain: "bippi-kashidashi.firebaseapp.com",
+    projectId: "bippi-kashidashi",
+    storageBucket: "bippi-kashidashi.firebasestorage.app",
+    messagingSenderId: "854789352185",
+    appId: "1:854789352185:web:a1b358e19ed24dc2211028"
+  };
+
+  const app = initializeApp(firebaseConfig);
+  const db  = getFirestore(app);
+
+  let allItems = {};  // id → data
+
+  // ========== 在庫読み込み ==========
+  async function loadItems() {
+    const snap = await getDocs(collection(db, "items"));
+    allItems = {};
+    snap.forEach(d => { allItems[d.id] = { id: d.id, ...d.data() }; });
+  }
+
+  // ========== 申請一覧 ==========
+  async function loadLoans() {
+    await loadItems();
+    const snap = await getDocs(query(collection(db, "loans"), orderBy("createdAt", "desc")));
+    const tbody = document.getElementById("loanTbody");
+    tbody.innerHTML = "";
+
+    snap.forEach(d => {
+      const loan = { id: d.id, ...d.data() };
+      const itemText = loan.items.map(i => `${i.name}×${i.qty}`).join("、");
+      const created  = loan.createdAt?.toDate().toLocaleDateString("ja-JP") || "—";
+
+      const statusClass = {
+        "申請中": "badge-pending",
+        "承認済": "badge-approved",
+        "返却済": "badge-returned",
+        "キャンセル": "badge-cancel"
+      }[loan.status] || "";
+
+      const tr = document.createElement("tr");
+      tr.innerHTML = `
+        <td>${created}</td>
+        <td>${loan.applicantName}<br><small>${loan.association}</small></td>
+        <td class="item-cell">${itemText}</td>
+        <td>${loan.useDate || "—"}</td>
+        <td>${loan.returnDate || "—"}</td>
+        <td><span class="badge ${statusClass}">${loan.status}</span></td>
+        <td>
+          <div class="action-btns">
+            ${loan.status === "申請中" ? `
+              <button class="btn-sm btn-approve" data-id="${loan.id}">承認</button>
+              <button class="btn-sm btn-cancel"  data-id="${loan.id}">NG</button>` : ""}
+            ${loan.status === "承認済" ? `
+              <button class="btn-sm btn-return" data-id="${loan.id}"
+                data-items='${JSON.stringify(loan.items)}'>返却</button>` : ""}
+          </div>
+        </td>
+      `;
+      tbody.appendChild(tr);
+    });
+
+    // ボタンイベント
+    document.querySelectorAll(".btn-approve").forEach(b =>
+      b.addEventListener("click", () => updateStatus(b.dataset.id, "承認済")));
+    document.querySelectorAll(".btn-cancel").forEach(b =>
+      b.addEventListener("click", () => updateStatus(b.dataset.id, "キャンセル", true)));
+    document.querySelectorAll(".btn-return").forEach(b =>
+      b.addEventListener("click", () => returnItems(b.dataset.id, JSON.parse(b.dataset.items))));
+  }
+
+  // ステータス更新
+  async function updateStatus(loanId, status, restoreStock = false) {
+    const loanRef = doc(db, "loans", loanId);
+    // キャンセル時は在庫を戻す
+    if (restoreStock) {
+      const loanSnap = await getDocs(collection(db, "loans"));
+      loanSnap.forEach(async d => {
+        if (d.id === loanId) {
+          for (const item of d.data().items) {
+            const itemRef = doc(db, "items", item.id);
+            const cur = allItems[item.id]?.lent || 0;
+            await updateDoc(itemRef, { lent: Math.max(0, cur - item.qty) });
+          }
+        }
+      });
+    }
+    await updateDoc(loanRef, { status });
+    loadLoans();
+  }
+
+  // 返却処理
+  async function returnItems(loanId, items) {
+    for (const item of items) {
+      const itemRef = doc(db, "items", item.id);
+      const cur = allItems[item.id]?.lent || 0;
+      await updateDoc(itemRef, { lent: Math.max(0, cur - item.qty) });
+    }
+    await updateDoc(doc(db, "loans", loanId), { status: "返却済" });
+    loadLoans();
+  }
+
+  // ========== 在庫管理タブ ==========
+  async function loadItemManager() {
+    await loadItems();
+    const grid = document.getElementById("itemManagerGrid");
+    grid.innerHTML = "";
+
+    Object.values(allItems).sort((a, b) => a.sortOrder - b.sortOrder)
+      .forEach(item => {
+        const available = item.stock - (item.lent || 0);
+        const div = document.createElement("div");
+        div.className = "im-card";
+        div.innerHTML = `
+          <div class="im-icon">${item.icon || "📦"}</div>
+          <div class="im-name">${item.name}</div>
+          <div class="im-row">
+            <span>総数</span>
+            <input type="number" class="im-stock" data-id="${item.id}"
+              value="${item.stock}" min="0" style="width:60px">
+          </div>
+          <div class="im-row">
+            <span>貸出中</span>
+            <strong>${item.lent || 0}</strong>
+          </div>
+          <div class="im-row">
+            <span>残り</span>
+            <strong class="${available <= 0 ? 'red' : available <= 1 ? 'orange' : 'green'}">${available}</strong>
+          </div>
+          <button class="btn-sm btn-save" data-id="${item.id}">保存</button>
+        `;
+        grid.appendChild(div);
+      });
+
+    document.querySelectorAll(".btn-save").forEach(b =>
+      b.addEventListener("click", async () => {
+        const id    = b.dataset.id;
+        const stock = parseInt(b.closest(".im-card").querySelector(".im-stock").value);
+        await updateDoc(doc(db, "items", id), { stock });
+        alert("更新しました");
+        loadItemManager();
+      }));
+  }
+
+  // ========== タブ切り替え ==========
+  window.addEventListener("DOMContentLoaded", () => {
+    loadLoans();
+
+    document.querySelectorAll(".tab-btn").forEach(btn => {
+      btn.addEventListener("click", () => {
+        document.querySelectorAll(".tab-btn").forEach(b => b.classList.remove("active"));
+        document.querySelectorAll(".tab-panel").forEach(p => p.classList.remove("active"));
+        btn.classList.add("active");
+        const panel = document.getElementById(btn.dataset.tab);
+        panel.classList.add("active");
+        if (btn.dataset.tab === "tabItems") loadItemManager();
+      });
+    });
+  });
+</script>
+
+<style>
+  :root {
+    --green:   #2e7d52;
+    --green-l: #4caf76;
+    --green-bg:#f0f7f3;
+    --accent:  #f5a623;
+    --text:    #1a2e22;
+    --muted:   #6b8577;
+    --border:  #c8dfd2;
+    --radius:  10px;
+    --shadow:  0 2px 12px rgba(46,125,82,.10);
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: "Hiragino Kaku Gothic ProN", "Meiryo", sans-serif;
+    background: var(--green-bg);
+    color: var(--text);
+    min-height: 100vh;
+  }
+
+  header {
+    background: var(--green);
+    color: #fff;
+    padding: 16px 24px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  header h1 { font-size: 1.1rem; font-weight: 700; }
+  .header-badge {
+    background: rgba(255,255,255,.2);
+    font-size: .7rem;
+    padding: 2px 10px;
+    border-radius: 20px;
+  }
+
+  /* タブ */
+  .tabs {
+    background: #fff;
+    border-bottom: 2px solid var(--border);
+    display: flex;
+    padding: 0 24px;
+  }
+  .tab-btn {
+    padding: 12px 20px;
+    border: none;
+    background: none;
+    font-family: inherit;
+    font-size: .88rem;
+    color: var(--muted);
+    cursor: pointer;
+    border-bottom: 3px solid transparent;
+    margin-bottom: -2px;
+    transition: all .2s;
+  }
+  .tab-btn:hover  { color: var(--green); }
+  .tab-btn.active { color: var(--green); border-bottom-color: var(--green); font-weight: 700; }
+
+  .tab-panel { display: none; padding: 24px; }
+  .tab-panel.active { display: block; }
+
+  /* テーブル */
+  .table-wrap { overflow-x: auto; background: #fff; border-radius: var(--radius); box-shadow: var(--shadow); }
+  table { width: 100%; border-collapse: collapse; font-size: .85rem; }
+  th {
+    background: var(--green);
+    color: #fff;
+    padding: 10px 12px;
+    text-align: left;
+    font-size: .78rem;
+    letter-spacing: .05em;
+    white-space: nowrap;
+  }
+  td { padding: 10px 12px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+  tr:last-child td { border-bottom: none; }
+  tr:hover td { background: var(--green-bg); }
+  .item-cell { font-size: .8rem; line-height: 1.6; }
+  small { color: var(--muted); font-size: .75rem; }
+
+  /* バッジ */
+  .badge {
+    display: inline-block;
+    padding: 3px 10px;
+    border-radius: 20px;
+    font-size: .75rem;
+    font-weight: 700;
+  }
+  .badge-pending  { background: #fff3cd; color: #856404; }
+  .badge-approved { background: #d4edda; color: #155724; }
+  .badge-returned { background: #d1ecf1; color: #0c5460; }
+  .badge-cancel   { background: #f8d7da; color: #721c24; }
+
+  /* ボタン */
+  .action-btns { display: flex; gap: 6px; }
+  .btn-sm {
+    padding: 4px 10px;
+    border-radius: 6px;
+    border: none;
+    font-size: .75rem;
+    font-family: inherit;
+    cursor: pointer;
+    font-weight: 700;
+    transition: opacity .15s;
+  }
+  .btn-sm:hover { opacity: .8; }
+  .btn-approve { background: var(--green-l); color: #fff; }
+  .btn-cancel  { background: #e74c3c; color: #fff; }
+  .btn-return  { background: #3498db; color: #fff; }
+  .btn-save    { background: var(--green); color: #fff; width: 100%; margin-top: 8px; padding: 6px; }
+
+  /* 在庫管理グリッド */
+  #itemManagerGrid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+    gap: 14px;
+  }
+  .im-card {
+    background: #fff;
+    border-radius: var(--radius);
+    padding: 14px;
+    box-shadow: var(--shadow);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+    text-align: center;
+  }
+  .im-icon { font-size: 2rem; }
+  .im-name { font-size: .82rem; font-weight: 700; line-height: 1.3; }
+  .im-row  { display: flex; justify-content: space-between; width: 100%; font-size: .8rem; color: var(--muted); align-items: center; }
+  .im-row input { text-align: center; border: 1px solid var(--border); border-radius: 6px; padding: 2px; }
+  .green  { color: var(--green); }
+  .orange { color: #e67e22; }
+  .red    { color: #e74c3c; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>⚙️ 備品管理画面</h1>
+  <span class="header-badge">豊田連合町内会自治会</span>
+</header>
+
+<div class="tabs">
+  <button class="tab-btn active" data-tab="tabLoans">📋 申請一覧</button>
+  <button class="tab-btn" data-tab="tabItems">📦 在庫管理</button>
+</div>
+
+<!-- 申請一覧 -->
+<div id="tabLoans" class="tab-panel active">
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>申請日</th>
+          <th>申請者</th>
+          <th>備品</th>
+          <th>使用日</th>
+          <th>返却予定</th>
+          <th>状態</th>
+          <th>操作</th>
+        </tr>
+      </thead>
+      <tbody id="loanTbody">
+        <tr><td colspan="7" style="text-align:center;color:#999;padding:32px">読み込み中…</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- 在庫管理 -->
+<div id="tabItems" class="tab-panel">
+  <div id="itemManagerGrid"></div>
+</div>
+
+</body>
+</html>
