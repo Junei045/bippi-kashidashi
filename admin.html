@@ -309,46 +309,155 @@
   .green  { color: var(--green); }
   .orange { color: #e67e22; }
   .red    { color: #e74c3c; }
+
+  /* パスワード画面 */
+  #loginScreen {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-height: 100vh;
+    background: var(--green-bg);
+    padding: 24px;
+  }
+  #loginBox {
+    background: #fff;
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    padding: 40px 32px;
+    width: 100%;
+    max-width: 360px;
+    text-align: center;
+  }
+  #loginBox .lock { font-size: 2.5rem; margin-bottom: 12px; }
+  #loginBox h2 { font-size: 1.1rem; color: var(--green); margin-bottom: 6px; }
+  #loginBox p  { font-size: .8rem; color: var(--muted); margin-bottom: 24px; }
+  #loginBox input {
+    width: 100%;
+    padding: 10px 14px;
+    border: 1.5px solid var(--border);
+    border-radius: 8px;
+    font-size: 1rem;
+    text-align: center;
+    letter-spacing: .2em;
+    margin-bottom: 12px;
+  }
+  #loginBox input:focus {
+    outline: none;
+    border-color: var(--green);
+    box-shadow: 0 0 0 3px rgba(46,125,82,.1);
+  }
+  #loginBtn {
+    width: 100%;
+    padding: 11px;
+    background: var(--green);
+    color: #fff;
+    border: none;
+    border-radius: 8px;
+    font-size: .95rem;
+    font-weight: 700;
+    font-family: inherit;
+    cursor: pointer;
+    transition: background .2s;
+  }
+  #loginBtn:hover { background: var(--green-l); }
+  #loginError {
+    color: #e74c3c;
+    font-size: .82rem;
+    margin-top: 10px;
+    display: none;
+  }
+  #mainContent { display: none; }
 </style>
 </head>
 <body>
 
-<header>
-  <h1>⚙️ 備品管理画面</h1>
-  <span class="header-badge">豊田連合町内会自治会</span>
-</header>
-
-<div class="tabs">
-  <button class="tab-btn active" data-tab="tabLoans">📋 申請一覧</button>
-  <button class="tab-btn" data-tab="tabItems">📦 在庫管理</button>
-</div>
-
-<!-- 申請一覧 -->
-<div id="tabLoans" class="tab-panel active">
-  <div class="table-wrap">
-    <table>
-      <thead>
-        <tr>
-          <th>申請日</th>
-          <th>申請者</th>
-          <th>備品</th>
-          <th>使用日</th>
-          <th>返却予定</th>
-          <th>状態</th>
-          <th>操作</th>
-        </tr>
-      </thead>
-      <tbody id="loanTbody">
-        <tr><td colspan="7" style="text-align:center;color:#999;padding:32px">読み込み中…</td></tr>
-      </tbody>
-    </table>
+<!-- パスワード画面 -->
+<div id="loginScreen">
+  <div id="loginBox">
+    <div class="lock">🔒</div>
+    <h2>管理画面ログイン</h2>
+    <p>豊田連合町内会自治会<br>備品管理システム</p>
+    <input type="password" id="passwordInput" placeholder="パスワードを入力" maxlength="20">
+    <button id="loginBtn">ログイン</button>
+    <div id="loginError">パスワードが違います</div>
   </div>
 </div>
 
-<!-- 在庫管理 -->
-<div id="tabItems" class="tab-panel">
-  <div id="itemManagerGrid"></div>
+<!-- メインコンテンツ -->
+<div id="mainContent">
+  <header>
+    <h1>⚙️ 備品管理画面</h1>
+    <span class="header-badge">豊田連合町内会自治会</span>
+  </header>
+
+  <div class="tabs">
+    <button class="tab-btn active" data-tab="tabLoans">📋 申請一覧</button>
+    <button class="tab-btn" data-tab="tabItems">📦 在庫管理</button>
+  </div>
+
+  <!-- 申請一覧 -->
+  <div id="tabLoans" class="tab-panel active">
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>申請日</th>
+            <th>申請者</th>
+            <th>備品</th>
+            <th>使用日</th>
+            <th>返却予定</th>
+            <th>状態</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody id="loanTbody">
+          <tr><td colspan="7" style="text-align:center;color:#999;padding:32px">読み込み中…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- 在庫管理 -->
+  <div id="tabItems" class="tab-panel">
+    <div id="itemManagerGrid"></div>
+  </div>
 </div>
+
+<script>
+  // ========== パスワード設定（変更する場合はここを書き換える） ==========
+  const ADMIN_PASSWORD = "toyota2024";
+
+  const loginScreen   = document.getElementById("loginScreen");
+  const mainContent   = document.getElementById("mainContent");
+  const passwordInput = document.getElementById("passwordInput");
+  const loginBtn      = document.getElementById("loginBtn");
+  const loginError    = document.getElementById("loginError");
+
+  // ブラウザを閉じるまでログイン状態を保持
+  if (sessionStorage.getItem("adminAuth") === "ok") {
+    loginScreen.style.display = "none";
+    mainContent.style.display = "block";
+  }
+
+  function tryLogin() {
+    if (passwordInput.value === ADMIN_PASSWORD) {
+      sessionStorage.setItem("adminAuth", "ok");
+      loginScreen.style.display = "none";
+      mainContent.style.display = "block";
+      loginError.style.display  = "none";
+    } else {
+      loginError.style.display = "block";
+      passwordInput.value = "";
+      passwordInput.focus();
+    }
+  }
+
+  loginBtn.addEventListener("click", tryLogin);
+  passwordInput.addEventListener("keydown", e => {
+    if (e.key === "Enter") tryLogin();
+  });
+</script>
 
 </body>
 </html>
