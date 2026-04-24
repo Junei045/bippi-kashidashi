@@ -452,30 +452,6 @@
       mainContent.style.display = "none";
     }
   });
-  
-  // ブラウザを閉じるまでログイン状態を保持
-  if (sessionStorage.getItem("adminAuth") === "ok") {
-    loginScreen.style.display = "none";
-    mainContent.style.display = "block";
-  }
-
-  function tryLogin() {
-    if (passwordInput.value === ADMIN_PASSWORD) {
-      sessionStorage.setItem("adminAuth", "ok");
-      loginScreen.style.display = "none";
-      mainContent.style.display = "block";
-      loginError.style.display  = "none";
-    } else {
-      loginError.style.display = "block";
-      passwordInput.value = "";
-      passwordInput.focus();
-    }
-  }
-
-  loginBtn.addEventListener("click", tryLogin);
-  passwordInput.addEventListener("keydown", e => {
-    if (e.key === "Enter") tryLogin();
-  });
 </script>
 
 </body>
