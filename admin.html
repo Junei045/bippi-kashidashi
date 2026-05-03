@@ -157,7 +157,7 @@
   }
 
   window.addEventListener("DOMContentLoaded", () => {
-    loadLoans();
+    // loadLoans() はログイン確認後に呼ぶため、ここでは呼ばない
     document.querySelectorAll(".tab-btn").forEach(btn => {
       btn.addEventListener("click", () => {
         document.querySelectorAll(".tab-btn").forEach(b => b.classList.remove("active"));
@@ -203,6 +203,9 @@
       loginScreen.style.display = "none";
       mainContent.style.display = "block";
       loginError.style.display  = "none";
+
+      // ③ ログイン確認後に申請一覧を読み込む（ここが正しいタイミング）
+      loadLoans();
 
     } else {
       loginScreen.style.display = "flex";
